@@ -14,7 +14,104 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      approval_actions: {
+        Row: {
+          action: string
+          approver_id: string
+          comment: string | null
+          created_at: string
+          id: string
+          request_id: string
+        }
+        Insert: {
+          action: string
+          approver_id: string
+          comment?: string | null
+          created_at?: string
+          id?: string
+          request_id: string
+        }
+        Update: {
+          action?: string
+          approver_id?: string
+          comment?: string | null
+          created_at?: string
+          id?: string
+          request_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "approval_actions_request_id_fkey"
+            columns: ["request_id"]
+            isOneToOne: false
+            referencedRelation: "approval_requests"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      approval_requests: {
+        Row: {
+          content: string | null
+          created_at: string
+          department: string
+          id: string
+          queue_position: number | null
+          status: string
+          title: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          content?: string | null
+          created_at?: string
+          department: string
+          id?: string
+          queue_position?: number | null
+          status?: string
+          title: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          content?: string | null
+          created_at?: string
+          department?: string
+          id?: string
+          queue_position?: number | null
+          status?: string
+          title?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      profiles: {
+        Row: {
+          created_at: string
+          department: string
+          id: string
+          name: string
+          role: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          department: string
+          id: string
+          name: string
+          role?: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          department?: string
+          id?: string
+          name?: string
+          role?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
