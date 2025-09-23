@@ -116,7 +116,7 @@ const Index = () => {
 
           {/* Right Column - Queue */}
           <div className="lg:col-span-2">
-            <ApprovalQueue refreshTrigger={refreshTrigger} />
+            <ApprovalQueue />
           </div>
         </div>
       </main>

@@ -1,14 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Textarea } from '@/components/ui/textarea';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Clock, User, Building2, CheckCircle, XCircle, Loader2 } from 'lucide-react';
+import { Clock, CheckCircle, XCircle, MessageCircle, User, Building, LogOut, Shield } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/hooks/use-toast';
-import { formatDistanceToNow } from 'date-fns';
+import { format } from 'date-fns';
 import { ko } from 'date-fns/locale';
+import { useNavigate } from 'react-router-dom';
+import ApprovalRequestForm from './ApprovalRequestForm';
 
 interface ApprovalRequest {
   id: string;
@@ -25,20 +28,33 @@ interface ApprovalRequest {
   } | null;
 }
 
-interface ApprovalQueueProps {
-  refreshTrigger: number;
+interface ApprovalAction {
+  id: string;
+  comment: string;
+  action: string;
+  created_at: string;
+  approver_id: string;
+  profiles: {
+    name: string;
+  } | null;
 }
 
-const ApprovalQueue: React.FC<ApprovalQueueProps> = ({ refreshTrigger }) => {
-  const { user, profile } = useAuth();
+const ApprovalQueue: React.FC = () => {
+  const { user, profile, signOut } = useAuth();
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [requests, setRequests] = useState<ApprovalRequest[]>([]);
+  const [actions, setActions] = useState<ApprovalAction[]>([]);
   const [loading, setLoading] = useState(true);
-  const [processingId, setProcessingId] = useState<string | null>(null);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [comment, setComment] = useState('');
+  const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
 
-  const fetchRequests = async () => {
+  const fetchData = async () => {
     try {
-      // First get approval requests
+      setLoading(true);
+      
+      // Fetch approval requests
       const { data: requestsData, error: requestsError } = await supabase
         .from('approval_requests')
         .select('*')
@@ -49,7 +65,7 @@ const ApprovalQueue: React.FC<ApprovalQueueProps> = ({ refreshTrigger }) => {
         return;
       }
 
-      // Then get profiles for each request
+      // Fetch user profiles for requests
       const requestsWithProfiles = await Promise.all(
         (requestsData || []).map(async (request) => {
           const { data: profileData } = await supabase
@@ -65,7 +81,36 @@ const ApprovalQueue: React.FC<ApprovalQueueProps> = ({ refreshTrigger }) => {
         })
       );
 
+      // Fetch approval actions
+      const { data: actionsData, error: actionsError } = await supabase
+        .from('approval_actions')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(10);
+
+      if (actionsError) {
+        console.error('Error fetching actions:', actionsError);
+        return;
+      }
+
+      // Fetch approver profiles for actions
+      const actionsWithProfiles = await Promise.all(
+        (actionsData || []).map(async (action) => {
+          const { data: profileData } = await supabase
+            .from('profiles')
+            .select('name')
+            .eq('id', action.approver_id)
+            .single();
+
+          return {
+            ...action,
+            profiles: profileData
+          };
+        })
+      );
+
       setRequests(requestsWithProfiles);
+      setActions(actionsWithProfiles);
     } catch (err) {
       console.error('Error:', err);
     } finally {
@@ -74,13 +119,13 @@ const ApprovalQueue: React.FC<ApprovalQueueProps> = ({ refreshTrigger }) => {
   };
 
   useEffect(() => {
-    fetchRequests();
+    fetchData();
   }, [refreshTrigger]);
 
   useEffect(() => {
     // Set up real-time subscription
     const channel = supabase
-      .channel('approval_requests_changes')
+      .channel('approval_changes')
       .on(
         'postgres_changes',
         {
@@ -89,7 +134,18 @@ const ApprovalQueue: React.FC<ApprovalQueueProps> = ({ refreshTrigger }) => {
           table: 'approval_requests'
         },
         () => {
-          fetchRequests();
+          fetchData();
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'approval_actions'
+        },
+        () => {
+          fetchData();
         }
       )
       .subscribe();
@@ -109,8 +165,6 @@ const ApprovalQueue: React.FC<ApprovalQueueProps> = ({ refreshTrigger }) => {
       return;
     }
 
-    setProcessingId(requestId);
-
     try {
       // Update the approval request status
       const { error: updateError } = await supabase
@@ -129,7 +183,7 @@ const ApprovalQueue: React.FC<ApprovalQueueProps> = ({ refreshTrigger }) => {
           request_id: requestId,
           approver_id: user.id,
           action: action,
-          comment: `${action === 'approved' ? '승인' : '반려'} 처리됨`
+          comment: comment || `${action === 'approved' ? '승인' : '반려'} 처리됨`
         });
 
       if (actionError) {
@@ -141,7 +195,9 @@ const ApprovalQueue: React.FC<ApprovalQueueProps> = ({ refreshTrigger }) => {
         description: `결재가 성공적으로 ${action === 'approved' ? '승인' : '반려'}되었습니다.`,
       });
 
-      fetchRequests();
+      setComment('');
+      setSelectedRequestId(null);
+      setRefreshTrigger(prev => prev + 1);
     } catch (error) {
       console.error('Error processing approval:', error);
       toast({
@@ -149,8 +205,6 @@ const ApprovalQueue: React.FC<ApprovalQueueProps> = ({ refreshTrigger }) => {
         title: "처리 실패",
         description: "결재 처리 중 오류가 발생했습니다.",
       });
-    } finally {
-      setProcessingId(null);
     }
   };
 
@@ -168,41 +222,84 @@ const ApprovalQueue: React.FC<ApprovalQueueProps> = ({ refreshTrigger }) => {
   };
 
   const isMyRequest = (request: ApprovalRequest) => {
-    return user && request.profiles && request.profiles.name === profile?.name;
+    return user && request.user_id === user.id;
   };
 
   const canApprove = profile?.role === 'approver' || profile?.role === 'admin';
 
+  const pendingRequests = requests.filter(req => req.status === 'pending');
+  const completedRequests = requests.filter(req => req.status !== 'pending').slice(0, 5);
+
+  if (!user) {
+    return null;
+  }
+
   if (loading) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Clock className="h-5 w-5" />
-            대기열
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center justify-center py-8">
-            <Loader2 className="h-6 w-6 animate-spin" />
-            <span className="ml-2">로딩 중...</span>
-          </div>
-        </CardContent>
-      </Card>
+      <div className="space-y-6">
+        <Card>
+          <CardContent className="flex items-center justify-center py-8">
+            <div className="text-center">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
+              <p>데이터를 불러오는 중...</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
     );
   }
 
-  const pendingRequests = requests.filter(req => req.status === 'pending');
-  const completedRequests = requests.filter(req => req.status !== 'pending');
-
   return (
-    <div className="space-y-6">
-      {/* Pending Requests */}
+    <div className="container mx-auto p-6 space-y-6">
+      {/* Header */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-4">
+              <div className="flex items-center space-x-2">
+                <User className="h-4 w-4" />
+                <span className="font-medium">{profile?.name}</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <Building className="h-4 w-4" />
+                <span className="text-sm text-muted-foreground">{profile?.department}</span>
+              </div>
+            </div>
+            <div className="flex items-center space-x-2">
+              {profile?.role === 'admin' && (
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => navigate('/admin')}
+                  className="flex items-center space-x-2"
+                >
+                  <Shield className="h-4 w-4" />
+                  <span>관리자</span>
+                </Button>
+              )}
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={signOut}
+                className="flex items-center space-x-2"
+              >
+                <LogOut className="h-4 w-4" />
+                <span>로그아웃</span>
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+      </Card>
+
+      {/* New Request Form */}
+      <ApprovalRequestForm onSuccess={() => setRefreshTrigger(prev => prev + 1)} />
+
+      {/* Pending Requests Queue */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Clock className="h-5 w-5" />
-            대기열 ({pendingRequests.length}명)
+            결재 대기열 ({pendingRequests.length}건)
           </CardTitle>
           <CardDescription>
             현재 결재 대기 중인 요청들입니다. 
@@ -221,74 +318,91 @@ const ApprovalQueue: React.FC<ApprovalQueueProps> = ({ refreshTrigger }) => {
                 className={`${isMyRequest(request) ? 'ring-2 ring-primary ring-offset-2' : ''}`}
               >
                 <CardContent className="pt-4">
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-2">
-                        <Badge variant="secondary" className="text-xs">
-                          {request.queue_position || index + 1}번째
-                        </Badge>
-                        {getStatusBadge(request.status)}
-                        {isMyRequest(request) && (
-                          <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
-                            내 신청
+                  <div className="space-y-4">
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-2">
+                          <Badge variant="secondary" className="text-xs">
+                            {request.queue_position || index + 1}번째
                           </Badge>
+                          {getStatusBadge(request.status)}
+                          {isMyRequest(request) && (
+                            <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
+                              내 신청
+                            </Badge>
+                          )}
+                        </div>
+                        
+                        <h4 className="font-semibold text-lg mb-1">{request.title}</h4>
+                        {request.content && (
+                          <p className="text-muted-foreground text-sm mb-3">{request.content}</p>
                         )}
+                        
+                        <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                          <div className="flex items-center gap-1">
+                            <User className="h-4 w-4" />
+                            {request.profiles?.name}
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <Building className="h-4 w-4" />
+                            {request.department}
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <Clock className="h-4 w-4" />
+                            {format(new Date(request.created_at), 'yyyy-MM-dd HH:mm', { locale: ko })}
+                          </div>
+                        </div>
                       </div>
                       
-                      <h4 className="font-semibold text-lg mb-1">{request.title}</h4>
-                      {request.content && (
-                        <p className="text-muted-foreground text-sm mb-3">{request.content}</p>
+                      {canApprove && request.status === 'pending' && (
+                        <div className="flex gap-2 ml-4">
+                          <Button
+                            size="sm"
+                            variant="default"
+                            onClick={() => handleApprovalAction(request.id, 'approved')}
+                            className="bg-green-600 hover:bg-green-700"
+                          >
+                            <CheckCircle className="h-4 w-4 mr-1" />
+                            승인
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            onClick={() => handleApprovalAction(request.id, 'rejected')}
+                          >
+                            <XCircle className="h-4 w-4 mr-1" />
+                            반려
+                          </Button>
+                        </div>
                       )}
-                      
-                      <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                        <div className="flex items-center gap-1">
-                          <User className="h-4 w-4" />
-                          {request.profiles?.name}
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <Building2 className="h-4 w-4" />
-                          {request.department}
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <Clock className="h-4 w-4" />
-                          {formatDistanceToNow(new Date(request.created_at), { 
-                            addSuffix: true, 
-                            locale: ko 
-                          })}
-                        </div>
-                      </div>
                     </div>
-                    
-                    {canApprove && request.status === 'pending' && (
-                      <div className="flex gap-2 ml-4">
-                        <Button
-                          size="sm"
-                          variant="default"
-                          onClick={() => handleApprovalAction(request.id, 'approved')}
-                          disabled={processingId === request.id}
-                          className="bg-green-600 hover:bg-green-700"
-                        >
-                          {processingId === request.id ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <CheckCircle className="h-4 w-4" />
-                          )}
-                          승인
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="destructive"
-                          onClick={() => handleApprovalAction(request.id, 'rejected')}
-                          disabled={processingId === request.id}
-                        >
-                          {processingId === request.id ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <XCircle className="h-4 w-4" />
-                          )}
-                          반려
-                        </Button>
+
+                    {canApprove && selectedRequestId === request.id && (
+                      <div className="border-t pt-4">
+                        <div className="flex items-center gap-2 mb-2">
+                          <MessageCircle className="h-4 w-4" />
+                          <span className="text-sm font-medium">결재 의견</span>
+                        </div>
+                        <Textarea
+                          value={comment}
+                          onChange={(e) => setComment(e.target.value)}
+                          placeholder="결재 의견을 입력하세요 (선택사항)"
+                          className="mb-2"
+                          rows={2}
+                        />
                       </div>
+                    )}
+
+                    {canApprove && request.status === 'pending' && selectedRequestId !== request.id && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSelectedRequestId(request.id)}
+                        className="w-full"
+                      >
+                        <MessageCircle className="h-4 w-4 mr-2" />
+                        의견 추가
+                      </Button>
                     )}
                   </div>
                 </CardContent>
@@ -298,7 +412,7 @@ const ApprovalQueue: React.FC<ApprovalQueueProps> = ({ refreshTrigger }) => {
         </CardContent>
       </Card>
 
-      {/* Completed Requests */}
+      {/* Recent Actions */}
       {completedRequests.length > 0 && (
         <Card>
           <CardHeader>
@@ -308,7 +422,7 @@ const ApprovalQueue: React.FC<ApprovalQueueProps> = ({ refreshTrigger }) => {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            {completedRequests.slice(0, 5).map((request) => (
+            {completedRequests.map((request) => (
               <div 
                 key={request.id}
                 className="flex items-center justify-between p-3 border rounded-lg"
@@ -319,10 +433,7 @@ const ApprovalQueue: React.FC<ApprovalQueueProps> = ({ refreshTrigger }) => {
                     <span>{request.profiles?.name}</span>
                     <span>{request.department}</span>
                     <span>
-                      {formatDistanceToNow(new Date(request.updated_at), { 
-                        addSuffix: true, 
-                        locale: ko 
-                      })}
+                      {format(new Date(request.updated_at), 'yyyy-MM-dd HH:mm', { locale: ko })}
                     </span>
                   </div>
                 </div>
